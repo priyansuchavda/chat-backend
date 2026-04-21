@@ -1,7 +1,15 @@
+import asyncio
+import json
+import time
+
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from .models import ChatRoom, Message, ChatParticipant, MessageStatus, Profile
-import json
+
+# If no ping (or any frame) arrives for this long, treat presence as dead and broadcast offline.
+# Flutter should send {"type": "ping"} at least every ~25s (see presence_service.dart).
+PRESENCE_STALE_AFTER_S = 75
+PRESENCE_STALE_POLL_S = 15
 
 
 class PresenceConsumer(AsyncWebsocketConsumer):
@@ -38,9 +46,55 @@ class PresenceConsumer(AsyncWebsocketConsumer):
         )
 
         await self.accept()
+        self._touch_presence_activity()
+        self._stale_poll_task = asyncio.create_task(self._poll_presence_staleness())
+
+    def _touch_presence_activity(self):
+        self._last_presence_activity = time.monotonic()
+
+    async def _poll_presence_staleness(self):
+        try:
+            while True:
+                await asyncio.sleep(PRESENCE_STALE_POLL_S)
+                if time.monotonic() - self._last_presence_activity > PRESENCE_STALE_AFTER_S:
+                    await self._close_stale_presence()
+                    return
+        except asyncio.CancelledError:
+            return
+
+    async def _close_stale_presence(self):
+        """No heartbeat: clear DB flag and notify others, then close this socket."""
+        if getattr(self, "_stale_presence_closed", False):
+            return
+        self._stale_presence_closed = True
+
+        if hasattr(self, "user") and self.user.is_authenticated:
+            await self.set_online_status(False)
+            await self.channel_layer.group_send(
+                self.presence_group,
+                {
+                    "type": "presence_update",
+                    "user_id": self.user.id,
+                    "is_online": False,
+                },
+            )
+        await self.close(code=4000)
 
     async def disconnect(self, close_code):
-        if hasattr(self, 'user') and self.user.is_authenticated:
+        task = getattr(self, "_stale_poll_task", None)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        already_offline = getattr(self, "_stale_presence_closed", False)
+        if (
+            hasattr(self, "user")
+            and self.user.is_authenticated
+            and not already_offline
+        ):
             await self.set_online_status(False)
 
             await self.channel_layer.group_send(
@@ -48,8 +102,8 @@ class PresenceConsumer(AsyncWebsocketConsumer):
                 {
                     "type": "presence_update",
                     "user_id": self.user.id,
-                    "is_online": False
-                }
+                    "is_online": False,
+                },
             )
 
         if hasattr(self, 'presence_group'):
@@ -59,8 +113,13 @@ class PresenceConsumer(AsyncWebsocketConsumer):
             )
 
     async def receive(self, text_data):
-        # Client can send a heartbeat/ping if needed
-        pass
+        self._touch_presence_activity()
+        try:
+            data = json.loads(text_data)
+            if data.get("type") == "ping":
+                await self.send(text_data=json.dumps({"type": "pong"}))
+        except json.JSONDecodeError:
+            pass
 
     async def presence_update(self, event):
         await self.send(text_data=json.dumps({
