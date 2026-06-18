@@ -147,3 +147,6 @@ SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }
+
+# Firebase Cloud Messaging
+FIREBASE_CREDENTIALS_PATH = BASE_DIR.parent / 'discount-buddy-d51bf-firebase-adminsdk.json'

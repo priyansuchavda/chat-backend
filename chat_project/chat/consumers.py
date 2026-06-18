@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 import time
 
 from channels.generic.websocket import AsyncWebsocketConsumer
@@ -176,6 +177,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
             msg = await self.save_message(self.user, self.room_id, message_content, msg_type)
 
+            # Push notification for recipients whose app is closed (non-blocking)
+            threading.Thread(
+                target=self._send_push_notifications,
+                args=(msg.id, self.room_id, message_content),
+                daemon=True,
+            ).start()
+
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {
@@ -210,3 +218,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             message_type=msg_type
         )
         return msg
+
+    def _send_push_notifications(self, message_id, room_id, content):
+        """Run in background thread so WebSocket is not blocked."""
+        from .firebase_service import notify_room_participants
+        from .models import ChatRoom
+
+        try:
+            room = ChatRoom.objects.get(id=room_id)
+            notify_room_participants(self.user, room, content, message_id=message_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Push notification error: %s", e)

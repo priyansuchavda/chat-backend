@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import ChatRoom, Message, ChatParticipant, MessageStatus, Profile, ConnectionRequest
+from .models import ChatRoom, Message, ChatParticipant, MessageStatus, Profile, ConnectionRequest, DeviceToken
 
 class ConnectionRequestSerializer(serializers.ModelSerializer):
     sender_name = serializers.CharField(source='sender.username', read_only=True)
@@ -146,3 +146,9 @@ class MessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = Message
         fields = ['id', 'room', 'sender', 'sender_name', 'content', 'message_type', 'created_at', 'is_deleted']
+
+class DeviceTokenSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DeviceToken
+        fields = ['id', 'token', 'device_name', 'is_active', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']

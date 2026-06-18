@@ -3,10 +3,10 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.db.models import Q
 from django.contrib.auth.models import User
-from .models import ChatRoom, Message, ChatParticipant, MessageStatus, Profile, ConnectionRequest
+from .models import ChatRoom, Message, ChatParticipant, MessageStatus, Profile, ConnectionRequest, DeviceToken
 from .serializers import (
     ChatRoomSerializer, MessageSerializer, UserSerializer, 
-    RegisterSerializer, ProfileEditSerializer, ConnectionRequestSerializer
+    RegisterSerializer, ProfileEditSerializer, ConnectionRequestSerializer, DeviceTokenSerializer
 )
 
 class RegisterView(generics.CreateAPIView):
@@ -105,6 +105,13 @@ class MessageViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         # Base queryset for listing: all messages in rooms where the user is a participant
         return Message.objects.filter(room__participants__user=self.request.user)
+
+    def perform_create(self, serializer):
+        message = serializer.save(sender=self.request.user)
+        from .firebase_service import notify_room_participants
+        notify_room_participants(
+            self.request.user, message.room, message.content, message_id=message.id
+        )
 
     def perform_destroy(self, instance):
         # Hard delete (or set is_deleted) only if the user is the sender
@@ -213,3 +220,57 @@ class ConnectionRequestViewSet(viewsets.ModelViewSet):
         connection_request.status = 'rejected'
         connection_request.save()
         return Response({"message": "Connection request rejected.", "status": "rejected"})
+
+class DeviceTokenViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint for managing device tokens for push notifications.
+    - POST /api/device-tokens/ - Register a new device token
+    - PUT /api/device-tokens/{id}/ - Update device token
+    - DELETE /api/device-tokens/{id}/ - Remove device token
+    """
+    serializer_class = DeviceTokenSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return DeviceToken.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        # Check if token already exists for another user and remove it
+        token = serializer.validated_data.get('token')
+        existing_token = DeviceToken.objects.filter(token=token).exclude(user=self.request.user).first()
+        if existing_token:
+            existing_token.delete()
+        
+        serializer.save(user=self.request.user)
+
+    @action(detail=False, methods=['post'])
+    def update_or_create(self, request):
+        """
+        Update existing device token or create a new one.
+        If token already exists for this user, update it; otherwise create new.
+        """
+        token = request.data.get('token')
+        device_name = request.data.get('device_name', 'Unknown Device')
+
+        if not token:
+            return Response({"error": "token is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check if token already exists for another user
+        existing_other_user = DeviceToken.objects.filter(token=token).exclude(user=request.user).first()
+        if existing_other_user:
+            existing_other_user.delete()
+
+        device_token, created = DeviceToken.objects.update_or_create(
+            token=token,
+            user=request.user,
+            defaults={'device_name': device_name, 'is_active': True}
+        )
+
+        serializer = self.get_serializer(device_token)
+        return Response(
+            {
+                "message": "Device token registered successfully" if created else "Device token updated",
+                "data": serializer.data
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        )

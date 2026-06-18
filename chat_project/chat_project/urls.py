@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.urls import path, include
-from chat.views import RoomViewSet, MessageViewSet, RegisterView, ProfileView, UserListView, ConnectionRequestViewSet, UserDetailView
+from chat.views import RoomViewSet, MessageViewSet, RegisterView, ProfileView, UserListView, ConnectionRequestViewSet, UserDetailView, DeviceTokenViewSet
 from django.conf import settings
 from django.conf.urls.static import static
 from rest_framework.routers import DefaultRouter
@@ -13,6 +13,7 @@ router = DefaultRouter()
 router.register(r'rooms', RoomViewSet, basename='room')
 router.register(r'messages', MessageViewSet, basename='message')
 router.register(r'connections', ConnectionRequestViewSet, basename='connection')
+router.register(r'device-tokens', DeviceTokenViewSet, basename='device-token')
 
 urlpatterns = [
     path('admin/', admin.site.urls),

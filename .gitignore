@@ -1,6 +1,12 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
 # Firebase credentials - SENSITIVE
-chitchat-92750-firebase-adminsdk-fbsvc-4c9d79b786.json
 *firebase*.json
+discount-buddy-d51bf-firebase-adminsdk.json
+chitchat-92750-firebase-adminsdk-fbsvc-4c9d79b786.json
 
 # Environment variables
 .env
