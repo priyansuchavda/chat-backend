@@ -3,10 +3,10 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.db.models import Q
 from django.contrib.auth.models import User
-from .models import ChatRoom, Message, ChatParticipant, MessageStatus, Profile
+from .models import ChatRoom, Message, ChatParticipant, MessageStatus, Profile, ConnectionRequest
 from .serializers import (
     ChatRoomSerializer, MessageSerializer, UserSerializer, 
-    RegisterSerializer, ProfileEditSerializer
+    RegisterSerializer, ProfileEditSerializer, ConnectionRequestSerializer
 )
 
 class RegisterView(generics.CreateAPIView):
@@ -34,6 +34,11 @@ class ProfileView(generics.RetrieveUpdateAPIView):
     def get_object(self):
         return self.request.user.profile
 
+class UserDetailView(generics.RetrieveAPIView):
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
 class RoomViewSet(viewsets.ModelViewSet):
     serializer_class = ChatRoomSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -55,6 +60,15 @@ class RoomViewSet(viewsets.ModelViewSet):
             target_user = User.objects.get(id=target_user_id)
         except User.DoesNotExist:
             return Response({"error": "User does not exist"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Check connection status
+        connection = ConnectionRequest.objects.filter(
+            Q(sender=self.request.user, receiver=target_user) |
+            Q(sender=target_user, receiver=self.request.user)
+        ).first()
+
+        if not connection or connection.status != 'accepted':
+            return Response({"error": "Connect First. You must be connected to start a chat."}, status=status.HTTP_403_FORBIDDEN)
 
         # Check if a private room already exists between these two
         existing_rooms = ChatRoom.objects.filter(
@@ -118,3 +132,84 @@ class MessageViewSet(viewsets.ModelViewSet):
             "message": f"Successfully deleted {deleted_count} messages.",
             "deleted_count": deleted_count
         }, status=status.HTTP_200_OK)
+
+class ConnectionRequestViewSet(viewsets.ModelViewSet):
+    serializer_class = ConnectionRequestSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        req_type = self.request.query_params.get('type')
+        if req_type == 'incoming':
+            return ConnectionRequest.objects.filter(
+                receiver=self.request.user,
+                status='pending'
+            )
+        
+        # Users can see requests they sent or received
+        return ConnectionRequest.objects.filter(
+            Q(sender=self.request.user) | Q(receiver=self.request.user)
+        )
+
+    @action(detail=False, methods=['get'])
+    def incoming(self, request):
+        incoming_requests = ConnectionRequest.objects.filter(
+            receiver=request.user,
+            status='pending'
+        )
+        serializer = self.get_serializer(incoming_requests, many=True)
+        return Response(serializer.data)
+
+    def perform_create(self, serializer):
+        receiver = serializer.validated_data['receiver']
+        if receiver == self.request.user:
+            raise serializers.ValidationError({"error": "You cannot send a connection request to yourself."})
+        
+        # Check if a request already exists
+        existing_request = ConnectionRequest.objects.filter(
+            Q(sender=self.request.user, receiver=receiver) | 
+            Q(sender=receiver, receiver=self.request.user)
+        ).first()
+
+        if existing_request:
+            if existing_request.status == 'pending':
+                raise serializers.ValidationError({"error": "A connection request is already pending between these users."})
+            elif existing_request.status == 'accepted':
+                raise serializers.ValidationError({"error": "You are already connected with this user."})
+            elif existing_request.status == 'blocked':
+                raise serializers.ValidationError({"error": "Cannot send connection request. User is blocked."})
+            # If rejected, maybe allow resending by updating the existing one or just reject again.
+            # Here we might update the existing request to pending if the current user sends it again
+            # To keep it simple, if there's an existing request, we can just update its status if it's rejected
+            
+            # Since perform_create creates a new one, if it exists and is rejected, we shouldn't create a new one. 
+            # We'd have to handle it in create() or here.
+            # Let's raise an error and tell them to use update, or we can just delete the old one and create a new one.
+            existing_request.delete()
+
+        serializer.save(sender=self.request.user, status='pending')
+
+    @action(detail=True, methods=['post'])
+    def accept(self, request, pk=None):
+        connection_request = self.get_object()
+        if connection_request.receiver != request.user:
+            return Response({"error": "You can only accept requests sent to you."}, status=status.HTTP_403_FORBIDDEN)
+        
+        if connection_request.status != 'pending':
+            return Response({"error": "This request is not pending."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        connection_request.status = 'accepted'
+        connection_request.save()
+        return Response({"message": "Connection request accepted.", "status": "accepted"})
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        connection_request = self.get_object()
+        if connection_request.receiver != request.user:
+            return Response({"error": "You can only reject requests sent to you."}, status=status.HTTP_403_FORBIDDEN)
+        
+        if connection_request.status != 'pending':
+            return Response({"error": "This request is not pending."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        connection_request.status = 'rejected'
+        connection_request.save()
+        return Response({"message": "Connection request rejected.", "status": "rejected"})

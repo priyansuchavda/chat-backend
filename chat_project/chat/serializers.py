@@ -1,18 +1,78 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import ChatRoom, Message, ChatParticipant, MessageStatus, Profile
+from .models import ChatRoom, Message, ChatParticipant, MessageStatus, Profile, ConnectionRequest
+
+class ConnectionRequestSerializer(serializers.ModelSerializer):
+    sender_name = serializers.CharField(source='sender.username', read_only=True)
+    receiver_name = serializers.CharField(source='receiver.username', read_only=True)
+
+    class Meta:
+        model = ConnectionRequest
+        fields = ['id', 'sender', 'sender_name', 'receiver', 'receiver_name', 'status', 'created_at', 'updated_at']
+        read_only_fields = ['sender', 'status']
+
 
 class ProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = Profile
-        fields = ['avatar', 'gender', 'dob', 'is_online', 'last_seen']
+        fields = ['avatar', 'bio', 'gender', 'dob', 'is_online', 'last_seen']
         read_only_fields = ['is_online', 'last_seen']
 
 class UserSerializer(serializers.ModelSerializer):
     profile = ProfileSerializer(read_only=True)
+    connection_status = serializers.SerializerMethodField()
+    mutual_friends = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'profile']
+        fields = ['id', 'username', 'email', 'profile', 'connection_status', 'mutual_friends']
+
+    def get_connection_status(self, obj):
+        request = self.context.get('request')
+        if not request or not hasattr(request, 'user') or request.user.is_anonymous:
+            return None
+        
+        from django.db.models import Q
+        connection = ConnectionRequest.objects.filter(
+            Q(sender=request.user, receiver=obj) |
+            Q(sender=obj, receiver=request.user)
+        ).first()
+        
+        if connection:
+            if connection.status == 'pending':
+                if connection.sender == request.user:
+                    return 'request_sent'
+                else:
+                    return 'request_received'
+            return connection.status
+        return 'not_connected'
+
+    def get_mutual_friends(self, obj):
+        request = self.context.get('request')
+        if not request or not hasattr(request, 'user') or request.user.is_anonymous:
+            return {"count": 0, "friends": []}
+        
+        if request.user.id == obj.id:
+            return {"count": 0, "friends": []}
+            
+        from django.db.models import Q
+        
+        # Friends of request.user
+        my_friends = User.objects.filter(
+            Q(sent_requests__receiver=request.user, sent_requests__status='accepted') |
+            Q(received_requests__sender=request.user, received_requests__status='accepted')
+        ).values_list('id', flat=True)
+        
+        # Friends of obj who are also in my_friends
+        mutual = User.objects.filter(
+            Q(sent_requests__receiver=obj, sent_requests__status='accepted') |
+            Q(received_requests__sender=obj, received_requests__status='accepted')
+        ).filter(id__in=my_friends)
+        
+        return {
+            "count": mutual.count(),
+            "friends": [{"id": u.id, "username": u.username} for u in mutual[:5]]
+        }
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, min_length=8)
@@ -41,7 +101,7 @@ class ProfileEditSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Profile
-        fields = ['username', 'email', 'avatar', 'gender', 'dob']
+        fields = ['username', 'email', 'avatar', 'bio', 'gender', 'dob']
 
     def update(self, instance, validated_data):
         user_data = validated_data.pop('user', {})

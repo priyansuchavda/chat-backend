@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.urls import path, include
-from chat.views import RoomViewSet, MessageViewSet, RegisterView, ProfileView, UserListView
+from chat.views import RoomViewSet, MessageViewSet, RegisterView, ProfileView, UserListView, ConnectionRequestViewSet, UserDetailView
 from django.conf import settings
 from django.conf.urls.static import static
 from rest_framework.routers import DefaultRouter
@@ -12,11 +12,13 @@ from rest_framework_simplejwt.views import (
 router = DefaultRouter()
 router.register(r'rooms', RoomViewSet, basename='room')
 router.register(r'messages', MessageViewSet, basename='message')
+router.register(r'connections', ConnectionRequestViewSet, basename='connection')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include(router.urls)),
     path('api/users/', UserListView.as_view(), name='user-list'),
+    path('api/users/<int:pk>/', UserDetailView.as_view(), name='user-detail'),
     path('api/register/', RegisterView.as_view(), name='auth_register'),
     path('api/login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
